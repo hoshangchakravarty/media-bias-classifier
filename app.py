@@ -1,7 +1,6 @@
-# app.py — MBIC (Media Bias & Information Classifier)
+# app.py — MBC (Media Bias Classifier)
 # Tabs: 📰 Live News (default, auto: technology/popularity/10) | 🔎 Classify | 📊 About / Results
-# Local model + NewsAPI via secrets.toml (no sidebar)
-# Graceful handling: if NewsAPI fails, show "API offline" banner (no fallback).
+# Uses HF Hub model id + NewsAPI key from .streamlit/secrets.toml
 
 import os
 import requests
@@ -60,28 +59,32 @@ h1,h2,h3,h4 { color: #e6edf3; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- Model ----------------
-MODEL_DIR = "hoshangchakravarty/media-bias-classifier"
-if not os.path.exists(MODEL_DIR):
-    st.error("❌ Model not found at `out/distilbert-mbic-binary/best`. Train & save before running the UI.")
-    st.stop()
+# ---------------- Model (HF Hub ID, not URL) ----------------
+MODEL_ID = "hoshangchakravarty/media-bias-classifier"
 
 def pick_device():
     try:
         if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
             return 0  # Apple MPS
+        if torch.cuda.is_available():
+            return 0  # CUDA
     except Exception:
         pass
     return -1  # CPU
 
 @st.cache_resource(show_spinner=True)
 def load_classifier():
-    tok = AutoTokenizer.from_pretrained(MODEL_DIR)
-    model = AutoModelForSequenceClassification.from_pretrained(MODEL_DIR)
-    model.config.id2label = {0: "Non-biased", 1: "Biased"}
-    model.config.label2id = {"Non-biased": 0, "Biased": 1}
-    device = pick_device()
-    return pipeline("text-classification", model=model, tokenizer=tok, device=device, top_k=None)
+    try:
+        tok = AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True, local_files_only=False)
+        model = AutoModelForSequenceClassification.from_pretrained(MODEL_ID, local_files_only=False)
+        # Ensure readable labels even if config uses LABEL_0/1
+        model.config.id2label = getattr(model.config, "id2label", {0: "Non-biased", 1: "Biased"})
+        model.config.label2id = getattr(model.config, "label2id", {"Non-biased": 0, "Biased": 1})
+        device = pick_device()
+        return pipeline("text-classification", model=model, tokenizer=tok, device=device, top_k=None)
+    except Exception as e:
+        st.error(f"❌ Could not load model from Hugging Face ({MODEL_ID}).\n\n{e}")
+        st.stop()
 
 clf = load_classifier()
 
@@ -159,14 +162,14 @@ def fetch_news(q, sort_by="publishedAt", page_size=10):
 st.markdown("""
 <div class='hero'>
   <h2 style='margin:0;'>🧭 MBIC — Media Bias & Information Classifier</h2>
-  <div style='color:#9fb0c9;'>DistilBERT (local) • English headlines • Bias spectrum with gauges</div>
+  <div style='color:#9fb0c9;'>DistilBERT (HF Hub) • English headlines • Bias spectrum with gauges</div>
 </div>
 """, unsafe_allow_html=True)
 
 # ---------------- Tabs ----------------
 tab_live, tab_classify, tab_about = st.tabs(["📰 Live News", "🔎 Classify", "📊 About / Results"])
 
-# ====== Tab 1: Live News (auto: technology/popularity/10) ======
+# ====== Tab 1: Live News (auto: technology / popularity / 10) ======
 with tab_live:
     default_topic, default_sort, default_articles = "technology", "popularity", 10
 
@@ -187,7 +190,7 @@ with tab_live:
         articles, status = fetch_news(query, sort_by, page_size)
 
         if status != "ok":
-            st.error("🛰 News API offline / unreachable. Please check your network or try again later.")
+            st.error("🛰 NewsAPI offline / unreachable. Check your key in .streamlit/secrets.toml or try again later.")
         if not articles:
             st.info("No articles to display right now.")
         else:
@@ -289,44 +292,28 @@ with tab_classify:
 # ====== Tab 3: About / Results ======
 with tab_about:
     st.title("📊 MBIC — Model Overview & Results")
-    st.caption("Machine Bias & Information Classification | Local DistilBERT Model")
+    st.caption("Media Bias Classifier | Local DistilBERT (HF Hub)")
 
     st.header("1️⃣ Motivation & Objective")
     st.markdown("""
-The **MBIC (Media Bias & Information Classifier)** project detects *biased language patterns* in short texts:
-- News headlines  
-- Social media posts  
-- Short editorial snippets  
-
-Goal: **quantify potential linguistic bias** — whether statements lean toward emotionally charged framing or remain neutral.
+Detect *biased language patterns* in short texts: news headlines, social posts, and editorial snippets.
+Goal: quantify whether language is neutral or emotionally/subjectively framed.
 """)
 
     st.header("2️⃣ Model Architecture")
     st.markdown("""
-**Model Base:** 🧠 `DistilBERT-base-uncased`  
-**Fine-tuned On:** `labeled_dataset.xlsx` with labels:
-- `Non-biased` → 0  
-- `Biased` → 1  
-
-**Summary**
-- Tokenizer: `AutoTokenizer` (DistilBERT)
-- Encoder: 6-layer DistilBERT
-- Head: linear (2 logits) + softmax
-- Loss: CrossEntropy
-- Optimizer: AdamW
-- Frameworks: 🤗 Transformers + PyTorch + Evaluate
+**Base:** `distilbert-base-uncased`  
+**Classes:** `Non-biased (0)` and `Biased (1)`  
+**Head:** linear → softmax • **Loss:** CrossEntropy • **Opt:** AdamW  
+**Frameworks:** 🤗 Transformers + PyTorch + Evaluate
 """)
-    st.markdown("**🧩 Flow:** *Embedding → Transformer → Classifier*")
 
     st.header("3️⃣ Dataset & Labeling")
     st.markdown("""
-**Data Source:** Curated manually + public headlines  
-- ~1,500 samples  
-- Split: 80% train / 20% test  
-- Balanced after cleaning
+**Source:** MBIC (Kaggle).  
+Split: 80/20 train/test • ~1.5K samples • English only.
 """)
 
-    # Arrow-safe table (Counts as strings)
     overview_rows = [
         ("Total Samples", "1551"),
         ("Train Set", "1240"),
@@ -366,12 +353,7 @@ Device: Apple MPS (Metal GPU)
     )
     st.altair_chart(chart_metrics, use_container_width=True)
 
-    st.markdown("""
-Results are on a 311-sample held-out test set.  
-The model shows decent separation — it **learns bias cues** like subjective framing and emotionally loaded verbs.
-""")
-
-    st.header("6️⃣ Sample Model Predictions")
+    st.header("6️⃣ Sample Predictions")
     samples = [
         ("Government accused of covering up data", "Biased"),
         ("China to remove tariffs on US agriculture goods from Nov 10", "Non-biased"),
@@ -386,47 +368,8 @@ The model shows decent separation — it **learns bias cues** like subjective fr
             unsafe_allow_html=True,
         )
 
-    st.header("7️⃣ Limitations & Future Work")
-    st.markdown("""
-- 🧩 Small dataset → possible topic overfit  
-- 🌍 Monolingual (EN) only  
-- 🧮 Next: cross-lingual fine-tuning (XLM-R / mMiniLM)  
-- 💬 Add sentiment & stance for richer explanations
-""")
-
-    st.header("8️⃣ Tools & Frameworks")
-    tools_df = pd.DataFrame({
-        "Component": ["NLP Backbone","ML Framework","UI","Dataset","Deployment"],
-        "Tool/Library": ["🤗 Transformers (DistilBERT)","PyTorch","Streamlit","Pandas + Excel","Streamlit Cloud"],
-        "Purpose": ["Bias detection","Model training","Interactive dashboard","Data handling","Lightweight hosting"]
-    }).astype({"Component":"string","Tool/Library":"string","Purpose":"string"})
-    st.table(tools_df)
-
-    st.markdown("### 📊 Dataset Label Distribution (Proportions, max=1)")
-    try:
-        if os.path.exists("labeled_dataset.xlsx"):
-            raw_df = pd.read_excel("labeled_dataset.xlsx")
-            raw_df = raw_df[["sentence","Label_bias"]].dropna()
-            label_map = {"Non-biased": 0, "Biased": 1}
-            raw_df = raw_df[raw_df["Label_bias"].isin(label_map)]
-            counts = raw_df["Label_bias"].value_counts().reindex(["Non-biased","Biased"]).fillna(0)
-            props = (counts / counts.sum()).reset_index()
-            props.columns = ["Label", "Proportion"]
-            chart_dist = (
-                alt.Chart(props).mark_bar().encode(
-                    x=alt.X("Label:N", sort=None, axis=alt.Axis(labelColor="#cfd8e3", title=None)),
-                    y=alt.Y("Proportion:Q", scale=alt.Scale(domain=[0,1]), axis=alt.Axis(format="~p", labelColor="#cfd8e3")),
-                    tooltip=["Label","Proportion"]
-                ).properties(height=220)
-                + alt.Chart(props).mark_text(dy=-6, fontWeight="bold").encode(
-                    x="Label:N", y="Proportion:Q", text=alt.Text("Proportion:Q", format=".2f")
-                )
-            )
-            st.altair_chart(chart_dist, use_container_width=True)
-        else:
-            st.info("`labeled_dataset.xlsx` not found in the app directory.")
-    except Exception as e:
-        st.warning(f"Could not read dataset for visualization: {e}")
+    st.header("7️⃣ Limitations & Next")
+    st.markdown("- Small dataset → possible topic overfit\n- English only\n- Next: add stance & sentiment, and multilingual XLM-R")
 
     st.markdown("---")
-    st.caption("Built with Streamlit + Transformers • Local DistilBERT bias classifier • Live headlines via NewsAPI")
+    st.caption("Built with Streamlit + Transformers • DistilBERT bias classifier • Live headlines via NewsAPI")
