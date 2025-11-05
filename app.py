@@ -61,7 +61,7 @@ h1,h2,h3,h4 { color: #e6edf3; }
 """, unsafe_allow_html=True)
 
 # ---------------- Model ----------------
-MODEL_DIR = "out/distilbert-mbic-binary/best"
+MODEL_DIR = "https://huggingface.co/hoshangchakravarty/media-bias-classifier"
 if not os.path.exists(MODEL_DIR):
     st.error("❌ Model not found at `out/distilbert-mbic-binary/best`. Train & save before running the UI.")
     st.stop()
