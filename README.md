@@ -8,6 +8,7 @@
 
 > **Detect and visualize linguistic bias in news headlines using a fine-tuned DistilBERT model — integrated with NewsAPI and an interactive Streamlit dashboard.**
 
+![MBIC Dashboard Preview](image.png)
 ---
 
 ## 📰 Overview
